@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "source_url": "https://catalog.unc.edu/courses/",
+  "course_count": 9680,
+  "subject_count": 150,
+  "requisite_count": 2619,
+  "collection_notes": "Legacy project snapshot imported from the original repository. The original collection timestamp was not recorded; run the documented refresh command to create a newly timestamped snapshot."
+}

@@ -1,140 +1,117 @@
 package main
 
-import (
-	"strings"
-)
-
-type CourseTree struct {
-	Root *CourseNode `json:"root"`
-}
-
-func NewCourseTree(node *CourseNode) *CourseTree {
-	return &CourseTree{
-		Root: node,
-	}
-}
-
-type Pair[T, U any] struct {
-	First  T
-	Second U
-}
-
-// * Depth-first traverse the tree and return a list of all the nodes
-func (self *CourseTree) Traverse() []Pair[*CourseNode, int] {
-	var result []Pair[*CourseNode, int]
-
-	var traverse func(node *CourseNode, depth int)
-	traverse = func(node *CourseNode, depth int) {
-		result = append(result, Pair[*CourseNode, int]{node, depth})
-		for _, child := range node.Children {
-			traverse(child, depth+1)
-		}
-	}
-	traverse(self.Root, 0)
-
-	return result
-}
-
-func (self *CourseTree) GetLeaves() []*CourseNode {
-	var result []*CourseNode
-
-	var traverse func(node *CourseNode)
-	traverse = func(node *CourseNode) {
-		if node.Type == NodeCourse {
-			result = append(result, node)
-		} else {
-			for _, child := range node.Children {
-				traverse(child)
-			}
-		}
-	}
-	traverse(self.Root)
-
-	return result
-}
-
-func (self *CourseTree) ToString() string {
-	var result string
-	for _, node := range self.Traverse() {
-		indent := strings.Repeat("|  ", node.Second)
-		result += indent
-		switch node.First.Type {
-		case NodeCourse:
-			if node.First.Value == nil {
-				result += "nil\n"
-				continue
-			}
-			result += node.First.Value.CourseCategory + node.First.Value.CourseCode + "\n"
-		case NodeAnd:
-			result += "AND\n"
-		case NodeOr:
-			result += "OR\n"
-		}
-	}
-	return strings.Trim(result, "\n")
-}
-
-type CourseNode struct {
-	Type     NodeType      `json:"type"`
-	Value    *Course       `json:"value"`
-	Children []*CourseNode `json:"children"`
-}
-
-type NodeType int
+type DependencyNodeType string
 
 const (
-	NodeCourse NodeType = iota
-	NodeAnd
-	NodeOr
+	DependencyCourse DependencyNodeType = "course"
+	DependencyAnd    DependencyNodeType = "and"
+	DependencyOr     DependencyNodeType = "or"
 )
 
-func (self *CourseNode) Len() int {
-	return len(self.Children)
+type DependencyNode struct {
+	Type        DependencyNodeType `json:"type"`
+	Course      *CourseSummary     `json:"course,omitempty"`
+	Children    []*DependencyNode  `json:"children,omitempty"`
+	ParseStatus ParseStatus        `json:"parse_status,omitempty"`
+	Kind        RequirementKind    `json:"kind,omitempty"`
+	Diagnostics []ParseDiagnostic  `json:"diagnostics,omitempty"`
+	Cycle       bool               `json:"cycle,omitempty"`
+	Truncated   bool               `json:"truncated,omitempty"`
+	Missing     bool               `json:"missing,omitempty"`
 }
 
-// * AND operation
-func And(nodeLeft, nodeRight *CourseNode) *CourseNode {
-	if nodeLeft.Type == NodeAnd {
-		if nodeRight.Type == NodeCourse {
-			nodeLeft.Children = append(nodeLeft.Children, nodeRight)
-		} else {
-			nodeLeft.Children = append(nodeLeft.Children, nodeRight.Children...)
-		}
-		return nodeLeft
-	} else if nodeRight.Type == NodeAnd {
-		if nodeLeft.Type == NodeCourse {
-			nodeRight.Children = append(nodeRight.Children, nodeLeft)
-		} else {
-			nodeRight.Children = append(nodeRight.Children, nodeLeft.Children...)
-		}
-		return nodeRight
-	}
-	return &CourseNode{
-		Type:     NodeAnd,
-		Children: []*CourseNode{nodeLeft, nodeRight},
-	}
+type DependencyTree struct {
+	Root     *DependencyNode `json:"root"`
+	MaxDepth int             `json:"max_depth"`
 }
 
-// * OR operation
-func Or(nodeLeft, nodeRight *CourseNode) *CourseNode {
-	if nodeLeft.Type == NodeOr {
-		if nodeRight.Type == NodeCourse {
-			nodeLeft.Children = append(nodeLeft.Children, nodeRight)
-		} else {
-			nodeLeft.Children = append(nodeLeft.Children, nodeRight.Children...)
+func (c *Catalog) BuildDependencyTree(courseName string, maxDepth int) (*DependencyTree, bool) {
+	if maxDepth < 0 {
+		maxDepth = 0
+	}
+	if maxDepth > 12 {
+		maxDepth = 12
+	}
+	if _, ok := c.GetCourse(courseName); !ok {
+		return nil, false
+	}
+	root := c.expandCourse(normalizeCourseName(courseName), 0, maxDepth, map[string]bool{})
+	return &DependencyTree{Root: root, MaxDepth: maxDepth}, true
+}
+
+func (c *Catalog) expandCourse(courseName string, depth, maxDepth int, path map[string]bool) *DependencyNode {
+	if path[courseName] {
+		summary := summaryForName(courseName)
+		if course, ok := c.GetCourse(courseName); ok {
+			summary = course.Summary()
 		}
-		return nodeLeft
+		return &DependencyNode{Type: DependencyCourse, Course: &summary, Cycle: true}
 	}
-	if nodeRight.Type == NodeOr {
-		if nodeLeft.Type == NodeCourse {
-			nodeRight.Children = append(nodeRight.Children, nodeLeft)
-		} else {
-			nodeRight.Children = append(nodeRight.Children, nodeLeft.Children...)
+
+	course, ok := c.GetCourse(courseName)
+	if !ok {
+		summary := summaryForName(courseName)
+		return &DependencyNode{Type: DependencyCourse, Course: &summary, Missing: true}
+	}
+
+	summary := course.Summary()
+	node := &DependencyNode{Type: DependencyCourse, Course: &summary}
+	if course.CoursePrerequisites == "" {
+		return node
+	}
+
+	parsed := ParseRequisites(course.CoursePrerequisites)
+	node.ParseStatus = parsed.Status
+	node.Kind = parsed.Kind
+	node.Diagnostics = parsed.Diagnostics
+	if parsed.Expression == nil {
+		return node
+	}
+	if depth >= maxDepth {
+		node.Truncated = true
+		return node
+	}
+
+	nextPath := clonePath(path)
+	nextPath[courseName] = true
+	node.Children = []*DependencyNode{c.expandRequirement(parsed.Expression, depth+1, maxDepth, nextPath)}
+	return node
+}
+
+func (c *Catalog) expandRequirement(requirement *RequirementNode, depth, maxDepth int, path map[string]bool) *DependencyNode {
+	if requirement.Type == RequirementCourse {
+		return c.expandCourse(requirement.Course, depth, maxDepth, path)
+	}
+
+	nodeType := DependencyAnd
+	if requirement.Type == RequirementOr {
+		nodeType = DependencyOr
+	}
+	node := &DependencyNode{Type: nodeType}
+	for _, child := range requirement.Children {
+		node.Children = append(node.Children, c.expandRequirement(child, depth, maxDepth, path))
+	}
+	return node
+}
+
+func clonePath(path map[string]bool) map[string]bool {
+	result := make(map[string]bool, len(path)+1)
+	for key, value := range path {
+		result[key] = value
+	}
+	return result
+}
+
+func summaryForName(courseName string) CourseSummary {
+	fields := splitCourseName(courseName)
+	return CourseSummary{CourseCategory: fields[0], CourseCode: fields[1]}
+}
+
+func splitCourseName(courseName string) [2]string {
+	for i, r := range courseName {
+		if r == ' ' {
+			return [2]string{courseName[:i], courseName[i+1:]}
 		}
-		return nodeRight
 	}
-	return &CourseNode{
-		Type:     NodeOr,
-		Children: []*CourseNode{nodeLeft, nodeRight},
-	}
+	return [2]string{courseName, ""}
 }

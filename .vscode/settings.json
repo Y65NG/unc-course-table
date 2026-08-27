@@ -1,0 +1,27 @@
+{
+    "files.exclude": {
+        "**/.git": true,
+        "**/.svn": true,
+        "**/.hg": true,
+        "**/CVS": true,
+        "**/.DS_Store": true,
+        "**/Thumbs.db": true,
+        ".class": false,
+        ".history": false,
+        ".ipynb_checkpoints": false,
+        ".vscode": false,
+        "**/__pycache__": false,
+        "**/.classpath": false,
+        "**/.factorypath": false,
+        "**/.ipynb_checkpoints": false,
+        "**/.project": false,
+        "**/.settings": false,
+        "**/**.class": false,
+        "**/bin/": false,
+        "**/default-**.ipynb": false,
+        "**/tempCodeRunnerFile.**": false,
+        "**/.idea": true,
+        "**/.vscode": true
+    },
+    "explorerExclude.backup": {}
+}
