@@ -1,304 +1,248 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
+	"sort"
+	"strconv"
 	"strings"
-	"time"
-
-	"github.com/gocolly/colly/v2"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 type Course struct {
-	CourseCategory      string      `json:"course_category" bson:"course_category"`
-	CourseCode          string      `json:"course_code" bson:"course_code"`
-	CourseTitle         string      `json:"course_title" bson:"course_title"`
-	CourseCredit        string      `json:"course_credit" bson:"course_credit"`
-	CourseDescription   string      `json:"course_description" bson:"course_description"`
-	CoursePrerequisites string      `json:"course_prerequisites" bson:"course_prerequisites"`
-	CourseTree          *CourseTree `json:"course_tree"`
+	CourseCategory      string `json:"course_category"`
+	CourseCode          string `json:"course_code"`
+	CourseTitle         string `json:"course_title"`
+	CourseCredit        string `json:"course_credit"`
+	CourseDescription   string `json:"course_description"`
+	CoursePrerequisites string `json:"course_prerequisites"`
 }
 
-func NewCourse(courseCategory, courseCode, courseTitle, courseCredit, courseDescription, coursePrerequisites string) Course {
+func NewCourse(category, code, title, credit, description, requisites string) Course {
 	return Course{
-		CourseCategory:      courseCategory,
-		CourseCode:          courseCode,
-		CourseTitle:         courseTitle,
-		CourseCredit:        courseCredit,
-		CourseDescription:   courseDescription,
-		CoursePrerequisites: coursePrerequisites,
+		CourseCategory:      strings.ToUpper(strings.TrimSpace(category)),
+		CourseCode:          strings.ToUpper(strings.TrimSpace(code)),
+		CourseTitle:         strings.TrimSpace(title),
+		CourseCredit:        strings.TrimSpace(credit),
+		CourseDescription:   strings.TrimSpace(description),
+		CoursePrerequisites: strings.TrimSpace(requisites),
 	}
 }
 
-func (self Course) GetName() string {
-	return self.CourseCategory + " " + self.CourseCode
+func (c Course) GetName() string {
+	return strings.TrimSpace(c.CourseCategory + " " + c.CourseCode)
 }
 
-func (self Course) ToString() string {
-	prerequisite, ok := courseSystem.GetPrerequisites(self.GetName())
-	if !ok {
-		prerequisite = self.CoursePrerequisites
-	}
-	return "Course Name: " + self.GetName() + "\n" +
-		"Course Title: " + self.CourseTitle + "\n" +
-		"Course Credit: " + self.CourseCredit + "\n" +
-		"Course Description: " + self.CourseDescription + "\n" +
-		self.CoursePrerequisites + "\n" +
-		"Course Tree: \n" + prerequisite
+type CourseSummary struct {
+	CourseCategory string `json:"course_category"`
+	CourseCode     string `json:"course_code"`
+	CourseTitle    string `json:"course_title"`
+	CourseCredit   string `json:"course_credit"`
 }
 
-type CourseSystem struct {
-	Courses map[string][]Course
-	db      *mongo.Client
-}
-
-func NewCourseSystem() *CourseSystem {
-	return &CourseSystem{
-		Courses: make(map[string][]Course),
+func (c Course) Summary() CourseSummary {
+	return CourseSummary{
+		CourseCategory: c.CourseCategory,
+		CourseCode:     c.CourseCode,
+		CourseTitle:    c.CourseTitle,
+		CourseCredit:   c.CourseCredit,
 	}
 }
 
-func (self *CourseSystem) ConnectDB() {
-	// var mongoUri = os.Getenv("MONGO_URI")
-	var mongoUri = "mongodb://localhost:27017"
-	DPrintln(mongoUri)
-
-	// CONNECT TO YOUR ATLAS CLUSTER:
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	client, err := mongo.Connect(ctx, options.Client().ApplyURI(
-		mongoUri,
-	))
-	if err != nil {
-		panic(err)
-	}
-
-	err = client.Ping(ctx, nil)
-
-	if err != nil {
-		fmt.Println("There was a problem connecting to your Atlas cluster. Check that the URI includes a valid username and password, and that your IP address has been added to the access list. Error: ")
-		panic(err)
-	}
-
-	self.db = client
-	fmt.Println("Connected to MongoDB!")
+func (c CourseSummary) GetName() string {
+	return strings.TrimSpace(c.CourseCategory + " " + c.CourseCode)
 }
 
-func (self *CourseSystem) Store() {
-	client := self.db
+type Catalog struct {
+	bySubject map[string][]Course
+	byName    map[string]*Course
+	ordered   []*Course
+}
 
-	// Provide the name of the database and collection you want to use.
-	// If they don't already exist, the driver and Atlas will create them
-	// automatically when you first write data.
-	var dbName = "CourseTable"
-	var collectionName = "CourseData"
-	collection := client.Database(dbName).Collection(collectionName)
-	var allCourses []any
-	for _, courses := range self.Courses {
-		for _, course := range courses {
-			course := course
-			allCourses = append(allCourses, &course)
+func NewCatalog(courses map[string][]Course) *Catalog {
+	catalog := &Catalog{
+		bySubject: make(map[string][]Course, len(courses)),
+		byName:    make(map[string]*Course),
+	}
+
+	for subject, entries := range courses {
+		normalizedSubject := strings.ToUpper(strings.TrimSpace(subject))
+		copied := append([]Course(nil), entries...)
+		sort.Slice(copied, func(i, j int) bool {
+			comparison := compareCourseCodes(copied[i].CourseCode, copied[j].CourseCode)
+			if comparison != 0 {
+				return comparison < 0
+			}
+			return copied[i].CourseTitle < copied[j].CourseTitle
+		})
+		catalog.bySubject[normalizedSubject] = copied
+	}
+
+	subjects := make([]string, 0, len(catalog.bySubject))
+	for subject := range catalog.bySubject {
+		subjects = append(subjects, subject)
+	}
+	sort.Strings(subjects)
+	for _, subject := range subjects {
+		entries := catalog.bySubject[subject]
+		for i := range entries {
+			course := &entries[i]
+			catalog.byName[course.GetName()] = course
+			catalog.ordered = append(catalog.ordered, course)
 		}
+		catalog.bySubject[subject] = entries
 	}
-	insertResult, err := collection.InsertMany(context.Background(), allCourses)
-	if err != nil {
-		fmt.Println("Something went wrong trying to insert the new documents:")
-		panic(err)
-	}
-	fmt.Println(len(insertResult.InsertedIDs), "new documents inserted to "+collectionName+" collection!")
+
+	return catalog
 }
 
-func (self *CourseSystem) LoadCache(path string) {
+func LoadCatalog(path string) (*Catalog, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		panic(err)
+		return nil, fmt.Errorf("open catalog snapshot: %w", err)
 	}
-	reader := json.NewDecoder(f)
-	if err = reader.Decode(&self.Courses); err != nil {
-		panic(err)
+	defer f.Close()
+
+	var courses map[string][]Course
+	if err := json.NewDecoder(f).Decode(&courses); err != nil {
+		return nil, fmt.Errorf("decode catalog snapshot: %w", err)
 	}
+	return NewCatalog(courses), nil
 }
 
-func (self *CourseSystem) Size() int {
-	var count int
-	for _, courses := range self.Courses {
-		count += len(courses)
-	}
-	return count
+func (c *Catalog) Size() int {
+	return len(c.ordered)
 }
 
-func (self *CourseSystem) AllCourses() []*Course {
-	var result []*Course
-	for _, courses := range self.Courses {
-		for _, course := range courses {
-			result = append(result, &course)
+func (c *Catalog) SubjectCount() int {
+	return len(c.bySubject)
+}
+
+func (c *Catalog) AllCourses() []*Course {
+	return append([]*Course(nil), c.ordered...)
+}
+
+func (c *Catalog) GetCourse(courseName string) (*Course, bool) {
+	normalized := normalizeCourseName(courseName)
+	course, ok := c.byName[normalized]
+	return course, ok
+}
+
+func (c *Catalog) Search(query string, limit int) []CourseSummary {
+	results, _ := c.SearchPage(query, 0, limit)
+	return results
+}
+
+func (c *Catalog) SearchPage(query string, offset, limit int) ([]CourseSummary, int) {
+	query = strings.ToUpper(strings.Join(strings.Fields(query), " "))
+	query = strings.TrimSpace(query)
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 {
+		limit = 25
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	matches := make([]CourseSummary, 0)
+	seen := make(map[string]bool)
+	for _, course := range c.ordered {
+		name := course.GetName()
+		if query == "" || strings.HasPrefix(name, query) {
+			matches = append(matches, course.Summary())
+			seen[name] = true
 		}
+	}
+	if query != "" {
+		for _, course := range c.ordered {
+			name := course.GetName()
+			if !seen[name] && strings.Contains(strings.ToUpper(course.CourseTitle), query) {
+				matches = append(matches, course.Summary())
+			}
+		}
+	}
+
+	total := len(matches)
+	if offset >= total {
+		return []CourseSummary{}, total
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	return matches[offset:end], total
+}
+
+func (c *Catalog) AsMap() map[string][]Course {
+	result := make(map[string][]Course, len(c.bySubject))
+	for subject, courses := range c.bySubject {
+		result[subject] = append([]Course(nil), courses...)
 	}
 	return result
 }
 
-func (self *CourseSystem) AddCourse(course Course) {
-	self.Courses[course.CourseCategory] = append(self.Courses[course.CourseCategory], course)
-}
-
-func (self *CourseSystem) GetCourses(courseStr string) []*Course {
-	// data := strings.Split(courseStr, " ")
-	// var category, code string
-	// if len(data) == 2 {
-	// 	category, code = data[0], data[1]
-	// } else if len(data) == 1 {
-	// 	category, code = data[0], ""
-	// } else {
-	// 	return nil
-	// }
-	// var result []*Course
-	// var filter bson.M
-	// if len(data[0]) == 4 {
-	// 	filter = bson.M{"course_category": category, "course_code": bson.M{"$regex": "^" + code}}
-	// } else {
-	// 	filter = bson.M{"course_category": bson.M{"$regex": "^" + category}, "course_code": bson.M{"$regex": "^" + code}}
-	// }
-	// opts := options.Find()
-	// opts.SetSort(bson.D{{Key: "course_code", Value: 1}})
-	// opts.SetLimit(50)
-
-	// cursor, err := self.db.Database("CourseTable").Collection("CourseData").Find(context.Background(), filter, opts)
-	// if err != nil {
-	// 	return nil
-	// }
-
-	// defer cursor.Close(context.Background())
-
-	// for cursor.Next(context.Background()) {
-	// 	var course Course
-	// 	if err = cursor.Decode(&course); err != nil {
-	// 		return nil
-	// 	}
-	// 	result = append(result, &course)
-	// }
-
-	var result []*Course
-	var count int
-L:
-	for _, courses := range self.Courses {
-		for _, course := range courses {
-			if count > 100 {
-				break L
-			}
-			course := course
-			if strings.HasPrefix(course.GetName(), courseStr) {
-				result = append(result, &course)
-				count++
+func normalizeCourseName(value string) string {
+	fields := strings.Fields(strings.ToUpper(strings.ReplaceAll(value, "\u00a0", " ")))
+	if len(fields) == 1 {
+		for i, r := range fields[0] {
+			if r >= '0' && r <= '9' {
+				return fields[0][:i] + " " + fields[0][i:]
 			}
 		}
 	}
-	return result
+	return strings.Join(fields, " ")
 }
 
-func (self *CourseSystem) GetCourse(courseStr string) (*Course, bool) {
-	data := strings.Split(courseStr, " ")
-	var category, code string
-	if len(data) == 2 {
-		category, code = data[0], data[1]
-	} else if len(data) == 1 {
-		category, code = data[0], ""
-	} else {
-		return nil, false
-	}
-
-	// var course Course
-	// filter := bson.M{"course_category": category, "course_code": code}
-	// e := self.db.Database("CourseTable").Collection("CourseData").FindOne(context.Background(), filter).Decode(&course)
-	// if e != nil {
-	// 	// log.Println(e)
-	// 	return nil, false
-	// }
-	// return &course, true
-
-	for _, course := range self.Courses[category] {
-		if course.CourseCode == code {
-			return &course, true
+func compareCourseCodes(left, right string) int {
+	leftNumber, leftSuffix, leftNumeric := splitCourseCode(left)
+	rightNumber, rightSuffix, rightNumeric := splitCourseCode(right)
+	if leftNumeric && rightNumeric {
+		if leftNumber < rightNumber {
+			return -1
 		}
-	}
-	return nil, false
-}
-
-func (self *CourseSystem) Recache() {
-	var URL = "https://catalog.unc.edu/courses"
-	collector := colly.NewCollector(
-		colly.CacheDir("./courses_cache"),
-		colly.UserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"),
-	)
-
-	detailCollector := collector.Clone()
-	collector.OnHTML("a[href]", func(h *colly.HTMLElement) {
-		if strings.Contains(h.Attr("href"), "courses/") {
-			log.Println("Visiting", h.Request.AbsoluteURL(h.Attr("href")))
-			detailCollector.Visit(h.Request.AbsoluteURL(h.Attr("href")))
+		if leftNumber > rightNumber {
+			return 1
 		}
-	})
-
-	detailCollector.OnHTML("div.courseblock", func(h *colly.HTMLElement) {
-		data := strings.Split(h.ChildText("span.detail-code"), " ")
-		courseCategory := data[0]
-		courseCode := data[1]
-		courseCode = strings.ReplaceAll(courseCode, ".", "")
-		courseTitle := h.ChildText("span.detail-title")
-		courseCredit := strings.Split(h.ChildText("span.detail-hours"), " ")[0]
-		courseDescription := h.ChildText("p.courseblockextra")
-		coursePrerequisitesStr := h.ChildText("span.detail-requisites")
-
-		course := NewCourse(
-			courseCategory,
-			courseCode,
-			courseTitle,
-			courseCredit,
-			courseDescription,
-			coursePrerequisitesStr,
-		)
-		// course.CoursePrerequisites.ParseText()
-		self.AddCourse(course)
-	})
-	if err := collector.Visit(URL); err != nil {
-		log.Println(err)
+		return strings.Compare(leftSuffix, rightSuffix)
 	}
-	// if err := self.ToJSON("./courses.json"); err != nil {
-	// 	panic(err)
-	// }
-
-	self.Store()
+	if leftNumeric {
+		return -1
+	}
+	if rightNumeric {
+		return 1
+	}
+	return strings.Compare(strings.ToUpper(left), strings.ToUpper(right))
 }
 
-func (self *CourseSystem) GetPrerequisites(courseStr string) (string, bool) {
-	course, ok := self.GetCourse(courseStr)
-	if !ok {
-		DPrintln("Course not found!")
-		return "", false
+func splitCourseCode(code string) (int, string, bool) {
+	code = strings.ToUpper(strings.TrimSpace(code))
+	index := 0
+	for index < len(code) && code[index] >= '0' && code[index] <= '9' {
+		index++
 	}
-	if len(course.CoursePrerequisites) == 0 {
-		return "", false
+	if index == 0 {
+		return 0, code, false
 	}
-	tree := Interpret(*course)
-	if tree == nil {
-		return "", false
+	number, err := strconv.Atoi(code[:index])
+	if err != nil {
+		return 0, code, false
 	}
-
-	return tree.ToString(), true
+	return number, code[index:], true
 }
-func (self *CourseSystem) ToJSON(path string) error {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0777)
+
+func writeCatalog(path string, courses map[string][]Course) error {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
-		return err
+		return fmt.Errorf("create catalog snapshot: %w", err)
 	}
-	data, err := json.Marshal(self.Courses)
-	if err != nil {
-		return err
+	defer f.Close()
+
+	encoder := json.NewEncoder(f)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(courses); err != nil {
+		return fmt.Errorf("encode catalog snapshot: %w", err)
 	}
-	_, err = f.Write(data)
 	return nil
 }
