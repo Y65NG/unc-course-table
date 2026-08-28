@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "snapshot_sha256": "67f2f03c29bc4d922e3d4e1a4e5c82c81b71fdd7ef95bb1f725eb09254f4f86f",
+  "course_count": 9680,
+  "subject_count": 150,
+  "requisite_count": 2619,
+  "parse_status_counts": {
+    "complete": 1559,
+    "failed": 73,
+    "partial": 987
+  },
+  "diagnostic_counts": {
+    "IGNORED_TEXT": 301,
+    "IMPLICIT_CONJUNCTION": 9,
+    "LEADING_OPERATOR": 4,
+    "MISSING_OPERAND": 3,
+    "NO_COURSE_REFERENCES": 73,
+    "RECOVERED_EXPRESSION": 2,
+    "TRAILING_OPERATOR": 168,
+    "UNMATCHED_PARENTHESIS": 13,
+    "UNSTRUCTURED_CONDITION": 786
+  },
+  "graph_cycle_count": 12061,
+  "graph_truncated_count": 10448,
+  "graph_missing_count": 3596,
+  "graph_max_depth": 6
+}
